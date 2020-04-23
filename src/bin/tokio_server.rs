@@ -23,7 +23,7 @@ type Senders = Arc<Mutex<Vec<Tx>>>;
 async fn value(senders: Senders) -> Result<()> {
     println!("[] PRODUCE VALUES");
 
-    for i in 0..10 {
+    for i in 0..100 {
         println!("------------------------------------------");
         println!("PRODUCING: {}", i);
 
