@@ -1,9 +1,12 @@
 use std::{thread, time};
 use std::net::SocketAddr;
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
+use std::time::Duration;
 
 use chrono::{Date, DateTime, NaiveDate, NaiveTime, Utc};
+use futures::lock::Mutex;
 use futures::TryStream;
+use futures_timer::Delay;
 use futures_util::{
     future, pin_mut, SinkExt,
     stream::TryStreamExt,
@@ -19,22 +22,22 @@ type Tx = UnboundedSender<i32>;
 
 type Senders = Arc<Mutex<Vec<Tx>>>;
 
-
 async fn value(senders: Senders) -> Result<()> {
-    println!("[] PRODUCE VALUES");
+    println!("[]thread B |  PRODUCE VALUES");
 
     for i in 0..100 {
         println!("------------------------------------------");
-        println!("PRODUCING: {}", i);
+        println!("thread B | PRODUCING: {}", i);
 
-        let peers = senders.lock().unwrap();
+        {
+            let peers = senders.lock().await;
 
-        for recp in peers.iter() {
-            recp.send(i).unwrap();
+            for recp in peers.iter() {
+                recp.send(i);
+            }
         }
 
-        let ten_millis = time::Duration::from_millis(1000);
-        thread::sleep(ten_millis);
+        let now = Delay::new(Duration::from_millis(1000)).await;
     }
 
     println!("[] TERMINATED");
@@ -46,27 +49,26 @@ async fn web_printer(addr: SocketAddr, stream: TcpStream, senders: Senders) -> R
     let ws_stream = tokio_tungstenite::accept_async(stream)
         .await
         .expect("Error during the websocket handshake occurred");
-    println!("WebSocket connection established: {}", addr);
-    println!("PRINTER ID [{}] | WAITING", addr);
+    println!("thread C | WebSocket connection established: {}", addr);
 
     let (tx, mut rx) = unbounded_channel();
-    senders.lock().unwrap().push(tx);
+    senders.lock().await.push(tx);
+
+    println!("thread C | ws [{}] | WAITING", addr);
+
 
     let (mut ws_sender, mut ws_receiver) = ws_stream.split();
 
-    loop {
-        while let Ok(v) = rx.try_recv() {
-            println!("PRINTER ID [{}] | RECEIVED: {:#?}", addr, v);
-            println!("PRINTER ID [{}] | SENDING TO WS: {:#?}", addr, v);
+    while let Some(v) = rx.recv().await {
+        println!("thread C | ws [{}] | RECEIVED: {:#?}", addr, v);
+        println!("thread C | ws [{}] | SENDING TO WS: {:#?}", addr, v);
 
-            let  mess = Message::Text(v.to_string());
-            ws_sender.send(mess).await?;
-        }
+        let mess = Message::Text(v.to_string());
+        ws_sender.send(mess).await?;
     }
 
     println!("PRINTER ID [{}] | DONE", addr);
     Ok(())
-
 }
 
 
@@ -74,17 +76,17 @@ async fn web_printer(addr: SocketAddr, stream: TcpStream, senders: Senders) -> R
 async fn main() -> Result<()> {
     let addr = "127.0.0.1:8080";
     let mut listener = TcpListener::bind(&addr).await.expect("Can't listen");
-    println!("Listening on: {}", addr);
+    println!("thread A | Listening on: {}", addr);
 
     let senders: Senders = Arc::new(Mutex::new(vec![]));
 
-   tokio::spawn(value(Arc::clone(&senders)));
+    tokio::spawn(value(Arc::clone(&senders)));
 
     while let Ok((socket, _)) = listener.accept().await {
         let addr = socket
             .peer_addr()
             .expect("connected streams should have a peer address");
-        println!("Peer address: {}", addr);
+        println!("thread A | connecting ws | address: {}", addr);
 
         tokio::spawn(
             // Process each socket concurrently.
